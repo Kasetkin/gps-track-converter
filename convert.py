@@ -6,7 +6,9 @@ from dataclasses import dataclass
 ### After conversion to GPX you can edit it in Viking or something similar. For example -- cut the begining and the ending of the track.
 ### Also, it's good to filter GPX track by speed and minimal distance, you can do it in OsmAnd on Android or "GPS Track Editor" on Windows.
 ### GPSBabel isn't very good, because it can not filter by max.speed (or I don't know how to do it).
-
+###
+### Link for simple and really good soft (works with Wine)
+### http://www.gpstrackeditor.com/transfer/GpsTrackEditor-1.15.141.exe
 
 @dataclass
 class TrackPoint:
