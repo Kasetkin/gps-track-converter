@@ -1,0 +1,10 @@
+Command for GPSBabel software.
+Can average N points to 1
+Can filter by distance
+
+CAN NOT filter by speed!!!
+
+gpsbabel -i gpx -f test_2.gpx -x position,distance=5m -o gpx -F merge_5m.gpx
+gpsbabel -i gpx -f test_2.gpx -x position,distance=10m -o gpx -F merge_10m.gpx
+gpsbabel -i gpx -f test_2.gpx -x resample,average=5 -o gpx -F merge_average5.gpx
+gpsbabel -i gpx -f merge_average5.gpx -x position,distance=5m -o gpx -F merge_average5_dist5m.gpx
