@@ -22,10 +22,24 @@ class TrackPoint:
     satInView: int = -1
     heading: float = -1.0
     speed: float = -1.0
+    temperature: float = -300.0
+    humidity: float = -1.0
+    pressure: float = -1.0
+    pressureAlt: float = -1.0
     line: int = -1
 
 DEFAULT_ID = "!XXXXXXXX"
 
+### fix GPS altitude using atmosphere pressure data
+### Formula for p(alt) = 1013.25 hPa * [ 1 − 6.5 * alt / (288150 m) ]^5.255
+### so, reverse formula will be
+### alt(p) = [ 1 - (p / 1013.25) ^ (1 / 5.255) ] * 288150 / 6.5
+###     precalculated values:
+###         1 / 5.255 == 0.190294957184
+###         288150 / 6.5 == 44330.7692308
+### it can be optimized if necessary, but probably it has no meaning
+def pressureToAlt(p: float) -> float:
+    return 44330.7692308 * (1.0 - pow(p / 1013.25, 0.190294957184))
 
 
 def main(inputFileName, outputFileName):
@@ -53,10 +67,14 @@ def main(inputFileName, outputFileName):
 
     ### check lines and get all IDs
     for line in inLines:
+        if line[len(line) - 1] == ';':
+            line = line[:-1]
+
         elements = line.split(';')
         elementsCount = len(elements)
         if elementsCount % 2 != 0:
             print(f"Error, number of elements {elementsCount} in string \n {line} \n, should be even, but it but isn't")
+            print(f"Inpput line: {lineIndex + 1}")
             sys.exit(1)
 
         lineId = DEFAULT_ID
@@ -80,14 +98,57 @@ def main(inputFileName, outputFileName):
             if key == "DT":
                 newPoint.timestamp = str(value)
 
+            if key == "TEMP":
+                newPoint.temperature = float(value)
+
+            if key == "HUMID":
+                newPoint.humidity = float(value)
+
+            if key == "PRESS":
+                newPoint.pressure = float(value)
+
         allIDs.add(lineId)
         if not lineId in trackById:
             trackById[lineId] = list()
 
-        track = trackById[lineId]
-        track.append(newPoint)
-
         lineIndex += 1
+        track = trackById[lineId]
+
+        if (len(newPoint.timestamp) > 0) and (newPoint.timestamp != "1970-01-01T00:00:00Z"):
+            if (abs(newPoint.lat) > 0.000001) or (abs(newPoint.lat) > 0.000001):
+                track.append(newPoint)
+
+
+
+    for deviceId in allIDs:
+        track = trackById[deviceId]
+        meanTrackGpsAlt = 0.0
+        meanTrackPressAlt = 0.0
+        counter = int(0)
+        for point in track:
+            gpsAlt = point.alt
+            hasGpsAlt = (gpsAlt > -10000.0) and (abs(gpsAlt) > 0.000001)
+            hasAirPressure = point.pressure > 0.000001
+            if hasGpsAlt and hasAirPressure:
+                altFromPress = pressureToAlt(point.pressure)
+                point.pressureAlt = altFromPress
+                print(f"ALT: gps {gpsAlt:.3f}, press {altFromPress:.3f}")
+                meanTrackGpsAlt += gpsAlt
+                meanTrackPressAlt += altFromPress
+                counter += 1
+
+        meanTrackGpsAlt /= counter
+        meanTrackPressAlt /= counter
+        meanAltCorrection = meanTrackGpsAlt - meanTrackPressAlt
+        print(f"Mean ALT: gps {gpsAlt:.3f}, press {altFromPress:.3f}, points {counter}, alt correction: {meanAltCorrection:.3f}")
+
+        ### \TODO use sliding window instead of one value (meanAltCorrection)
+
+        for point in track:
+            point.pressureAlt += meanAltCorrection
+            print(f"Corrected ALT: gps {point.alt:.3f}, press {point.pressureAlt:.3f}")
+
+
 
     ### generate GPX for each deviceID
     for deviceId in allIDs:
@@ -109,17 +170,29 @@ def main(inputFileName, outputFileName):
         segmentNode = ET.SubElement(trackNode, "trkseg")
 
         track = trackById[deviceId]
+        DEFAULT_POINT = TrackPoint()
         for point in track:
             trkptArgs = dict()
-            trkptArgs["lat"] = "{:.10f}".format(point.lat)
-            trkptArgs["lon"] = "{:.10f}".format(point.lon)
+            latStr = "{:.10f}".format(point.lat)
+            lonStr = "{:.10f}".format(point.lon)
+            if (abs(point.lat) > 0.000001) or (abs(point.lat) > 0.000001):
+                trkptArgs["lat"] = latStr
+                trkptArgs["lon"] = lonStr
+
             trkptNode = ET.SubElement(segmentNode, "trkpt", trkptArgs)
 
-            if point.alt > -10000.0:
-                elevationNode = ET.SubElement(trkptNode, "ele")
-                elevationNode.text = "{:.10f}".format(point.alt)
+            altForGpx = DEFAULT_POINT.alt
+            if (point.pressureAlt > 0.000001):
+                altForGpx = point.pressureAlt
+            else:
+                if (point.alt > -10000.0) and (abs(point.alt) > 0.000001):
+                    altForGpx = point.alt
 
-            if len(point.timestamp) > 0:
+            if altForGpx > -10000.0:
+                elevationNode = ET.SubElement(trkptNode, "ele")
+                elevationNode.text = "{:.10f}".format(altForGpx)
+
+            if (len(point.timestamp) > 0) and (point.timestamp != "1970-01-01T00:00:00Z"):
                 timeNode = ET.SubElement(trkptNode, "time")
                 timeNode.text = point.timestamp
 
@@ -138,6 +211,25 @@ def main(inputFileName, outputFileName):
             if point.pdop > 0.0:
                 pdopNode = ET.SubElement(trkptNode, "pdop")
                 pdopNode.text = "{:.3f}".format(point.pdop)
+
+            hasTemperature = point.temperature > -274.0
+            hasPressure = point.pressure > 0.0
+            hasHumidity = point.humidity >= 0.0
+            needExtensions = hasTemperature or hasHumidity or hasPressure
+            if needExtensions:
+                extensionsNode = ET.SubElement(trkptNode, "extensions")
+                gpxtpxExtensionNode = ET.SubElement(extensionsNode, "gpxtpx:TrackPointExtension")
+                if hasTemperature:
+                    tempNode = ET.SubElement(gpxtpxExtensionNode, "gpxtpx:atemp")
+                    tempNode.text = str(point.temperature)
+
+                # if hasHumidity:
+                #     humidityNode = ET.SubElement(gpxtpxExtensionNode, "gpxtpx:humid")
+                #     humidityNode.text = str(point.humidity)
+                #
+                # if hasPressure:
+                #     pressureNode = ET.SubElement(gpxtpxExtensionNode, "gpxtpx:pressure")
+                #     pressureNode.text = str(point.pressure)
 
         tree = ET.ElementTree(root)
         ET.indent(tree, space="  ", level=0)
