@@ -92,6 +92,15 @@ def main(inputFileName, outputFileName):
             if key == "LON":
                 newPoint.lon = float(value)
 
+            if key == "HDOP":
+                newPoint.hdop = float(value) * 0.01
+
+            if key == "VDOP":
+                newPoint.vdop = float(value) * 0.01
+
+            if key == "PDOP":
+                newPoint.pdop = float(value) * 0.01
+
             if key == "ALT":
                 newPoint.alt = float(value)
 
