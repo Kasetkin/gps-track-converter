@@ -1,7 +1,9 @@
 import argparse
 import os
+from queue import SimpleQueue
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+import matplotlib.pyplot as plt
 
 ### After conversion to GPX you can edit it in Viking or something similar. For example -- cut the begining and the ending of the track.
 ### Also, it's good to filter GPX track by speed and minimal distance, you can do it in OsmAnd on Android or "GPS Track Editor" on Windows.
@@ -28,6 +30,7 @@ class TrackPoint:
     pressureAlt: float = -1.0
     line: int = -1
 
+MAX_HDOP = 5.0
 DEFAULT_ID = "!XXXXXXXX"
 
 ### fix GPS altitude using atmosphere pressure data
@@ -41,6 +44,60 @@ DEFAULT_ID = "!XXXXXXXX"
 def pressureToAlt(p: float) -> float:
     return 44330.7692308 * (1.0 - pow(p / 1013.25, 0.190294957184))
 
+
+AVERAGING_WINDOW_SIZE = 1001
+def altitudeCorrection(altsGps: list, altsPress: list) -> list:
+    if len(altsGps) != len(altsPress):
+        print(f"Error!!! len(gps) should be equal to len(press), but it is {len(altsGps)} and {len(altsPress)}")
+        system.exit(1)
+
+    if len(altsGps) < AVERAGING_WINDOW_SIZE:
+        print(f"Error!!! len(gps) should be equal >= {AVERAGING_WINDOW_SIZE}, but it is {len(altsGps)}")
+        system.exit(1)
+
+    gpsQueue = SimpleQueue()
+    gpsQueueSum = 0
+    pressQueue = SimpleQueue()
+    pressQueueSum = 0
+
+    correctionsList = list()
+
+    for index in range(0, len(altsGps)):
+        gps = altsGps[index]
+        press = altsPress[index]
+
+        while gpsQueue.qsize() >= AVERAGING_WINDOW_SIZE:
+            oldValue = gpsQueue.get_nowait()
+            gpsQueueSum -= oldValue
+
+        gpsQueue.put_nowait(gps)
+        gpsQueueSum += gps
+
+        while pressQueue.qsize() >= AVERAGING_WINDOW_SIZE:
+            oldValue = pressQueue.get_nowait()
+            pressQueueSum -= oldValue
+
+        pressQueue.put_nowait(press)
+        pressQueueSum += press
+
+        if pressQueue.qsize() == AVERAGING_WINDOW_SIZE and gpsQueue.qsize() == AVERAGING_WINDOW_SIZE:
+            correction = float(gpsQueueSum - pressQueueSum)
+            correction /= float(AVERAGING_WINDOW_SIZE)
+            correctionsList.append(correction)
+
+    print(f"corrections list size = {len(correctionsList)}")
+
+
+    firstWindowCorrection = correctionsList[0]
+    resultList = list()
+    for index in range(0, AVERAGING_WINDOW_SIZE):
+        resultList.append(altsPress[index] + firstWindowCorrection)
+
+    for index in range(AVERAGING_WINDOW_SIZE, len(altsGps)):
+        correctionForIndex = correctionsList[index - AVERAGING_WINDOW_SIZE]
+        resultList.append(altsPress[index] + correctionForIndex)
+
+    return resultList
 
 def main(inputFileName, outputFileName):
     print(f"input file: {inputFileName}")
@@ -93,13 +150,13 @@ def main(inputFileName, outputFileName):
                 newPoint.lon = float(value)
 
             if key == "HDOP":
-                newPoint.hdop = float(value) * 0.01
+                newPoint.hdop = float(value)
 
             if key == "VDOP":
-                newPoint.vdop = float(value) * 0.01
+                newPoint.vdop = float(value)
 
             if key == "PDOP":
-                newPoint.pdop = float(value) * 0.01
+                newPoint.pdop = float(value)
 
             if key == "ALT":
                 newPoint.alt = float(value)
@@ -125,14 +182,18 @@ def main(inputFileName, outputFileName):
 
         if (len(newPoint.timestamp) > 0) and (newPoint.timestamp != "1970-01-01T00:00:00Z"):
             if (abs(newPoint.lat) > 0.000001) or (abs(newPoint.lat) > 0.000001):
-                track.append(newPoint)
-
+                if (newPoint.hdop < 0.0) or ((newPoint.hdop > 0.0) and (newPoint.hdop < MAX_HDOP)):
+                    track.append(newPoint)
 
 
     for deviceId in allIDs:
+        ALTITUDE_TO_FIX = -1234567
+        altsGps = list()
+        altsPress = list()
+
         track = trackById[deviceId]
-        meanTrackGpsAlt = 0.0
-        meanTrackPressAlt = 0.0
+        # meanTrackGpsAlt = 0.0
+        # meanTrackPressAlt = 0.0
         counter = int(0)
         for point in track:
             gpsAlt = point.alt
@@ -140,22 +201,36 @@ def main(inputFileName, outputFileName):
             hasAirPressure = point.pressure > 0.000001
             if hasGpsAlt and hasAirPressure:
                 altFromPress = pressureToAlt(point.pressure)
-                point.pressureAlt = altFromPress
+                point.pressureAlt = ALTITUDE_TO_FIX
                 print(f"ALT: gps {gpsAlt:.3f}, press {altFromPress:.3f}")
-                meanTrackGpsAlt += gpsAlt
-                meanTrackPressAlt += altFromPress
+                # meanTrackGpsAlt += gpsAlt
+                # meanTrackPressAlt += altFromPress
+                altsGps.append(gpsAlt)
+                altsPress.append(altFromPress)
                 counter += 1
 
-        meanTrackGpsAlt /= counter
-        meanTrackPressAlt /= counter
-        meanAltCorrection = meanTrackGpsAlt - meanTrackPressAlt
-        print(f"Mean ALT: gps {gpsAlt:.3f}, press {altFromPress:.3f}, points {counter}, alt correction: {meanAltCorrection:.3f}")
+        correctedAlts = altitudeCorrection(altsGps, altsPress)
+
+        # meanTrackGpsAlt /= counter
+        # meanTrackPressAlt /= counter
+        # meanAltCorrection = meanTrackGpsAlt - meanTrackPressAlt
+        # print(f"Mean ALT: gps {gpsAlt:.3f}, press {altFromPress:.3f}, points {counter}, alt correction: {meanAltCorrection:.3f}")
 
         ### \TODO use sliding window instead of one value (meanAltCorrection)
 
+        index = 0
         for point in track:
-            point.pressureAlt += meanAltCorrection
-            print(f"Corrected ALT: gps {point.alt:.3f}, press {point.pressureAlt:.3f}")
+            if point.pressureAlt == ALTITUDE_TO_FIX:
+                point.pressureAlt = correctedAlts[index]
+                index += 1
+                print(f"Corrected ALT: gps {point.alt:.3f}, press {point.pressureAlt:.3f}")
+
+        xValues = range(0, counter)
+        plt.plot(xValues, altsGps, color='green')
+        plt.plot(xValues, altsPress, color='blue')
+        plt.plot(xValues, correctedAlts, color='red')
+        plt.show()
+
 
 
 
