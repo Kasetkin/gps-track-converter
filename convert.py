@@ -30,8 +30,11 @@ class TrackPoint:
     pressureAlt: float = -1.0
     line: int = -1
 
+MAX_PDOP = 4.0
 MAX_HDOP = 5.0
+MAX_VDOP = 5.0
 DEFAULT_ID = "!XXXXXXXX"
+AVERAGING_WINDOW_SIZE = 101
 
 ### fix GPS altitude using atmosphere pressure data
 ### Formula for p(alt) = 1013.25 hPa * [ 1 − 6.5 * alt / (288150 m) ]^5.255
@@ -45,14 +48,13 @@ def pressureToAlt(p: float) -> float:
     return 44330.7692308 * (1.0 - pow(p / 1013.25, 0.190294957184))
 
 
-AVERAGING_WINDOW_SIZE = 1001
 def altitudeCorrection(altsGps: list, altsPress: list) -> list:
     if len(altsGps) != len(altsPress):
         print(f"Error!!! len(gps) should be equal to len(press), but it is {len(altsGps)} and {len(altsPress)}")
         system.exit(1)
 
     if len(altsGps) < AVERAGING_WINDOW_SIZE:
-        print(f"Error!!! len(gps) should be equal >= {AVERAGING_WINDOW_SIZE}, but it is {len(altsGps)}")
+        print(f"Error!!! len(gps) should be >= {AVERAGING_WINDOW_SIZE}, but it is {len(altsGps)}")
         system.exit(1)
 
     gpsQueue = SimpleQueue()
@@ -183,7 +185,9 @@ def main(inputFileName, outputFileName):
         if (len(newPoint.timestamp) > 0) and (newPoint.timestamp != "1970-01-01T00:00:00Z"):
             if (abs(newPoint.lat) > 0.000001) or (abs(newPoint.lat) > 0.000001):
                 if (newPoint.hdop < 0.0) or ((newPoint.hdop > 0.0) and (newPoint.hdop < MAX_HDOP)):
-                    track.append(newPoint)
+                    if (newPoint.pdop < 0.0) or ((newPoint.pdop > 0.0) and (newPoint.pdop < MAX_PDOP)):
+                        if (newPoint.vdop < 0.0) or ((newPoint.vdop > 0.0) and (newPoint.vdop < MAX_VDOP)):
+                            track.append(newPoint)
 
 
     for deviceId in allIDs:
